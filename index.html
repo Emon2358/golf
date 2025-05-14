@@ -3,63 +3,43 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ゴルフゲーム</title>
+  <title>ローグクライミングゲーム</title>
   <style>
-    body { margin: 0; overflow: hidden; background: #222; font-family: sans-serif; }
-    canvas { display: block; background: #333; }
+    body { margin: 0; overflow: hidden; background: #111; font-family: sans-serif; color: #fff; }
+    canvas { display: block; background: #222; }
     .overlay {
-      position: absolute;
-      top: 0; left: 0; right: 0; bottom: 0;
-      background: rgba(0,0,0,0.8);
-      color: #fff;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      z-index: 10;
+      position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.8); display: flex; flex-direction: column;
+      align-items: center; justify-content: center; z-index: 10;
     }
     .overlay.hidden { display: none; }
     .overlay button {
-      margin-top: 20px;
-      padding: 10px 20px;
-      font-size: 18px;
-      border: none;
-      border-radius: 5px;
-      cursor: pointer;
+      margin-top: 20px; padding: 10px 20px; font-size: 18px;
+      border: none; border-radius: 5px; cursor: pointer;
     }
-    #scorePanel {
-      position: absolute;
-      top: -100px;
-      left: 50%;
-      transform: translateX(-50%);
-      width: 300px;
-      height: 80px;
-      background: rgba(255,255,255,0.9);
-      color: #000;
-      font-size: 24px;
-      text-align: center;
-      line-height: 80px;
-      border-radius: 10px;
-      transition: top 1s ease;
-      z-index: 5;
+    #infoPanel {
+      position: absolute; top: 10px; left: 10px; z-index: 5;
+      background: rgba(255,255,255,0.1); padding: 5px 10px; border-radius: 5px;
     }
+    #infoPanel div { margin: 5px 0; }
   </style>
 </head>
 <body>
 <canvas id="gameCanvas"></canvas>
-<div id="scorePanel"></div>
-
-<!-- スタート画面 -->
-<div id="startOverlay" class="overlay">
-  <h1>ゴルフゲーム</h1>
-  <p>ドラッグ＆フリックでボールを打ち、ゴールを目指そう！</p>
-  <button id="startBtn">スタート</button>
+<div id="infoPanel">
+  <div>階層: <span id="floorNum">1</span>/100</div>
+  <div>スコア: <span id="scoreVal">0</span></div>
 </div>
 
-<!-- ゲームオーバー画面 -->
+<div id="startOverlay" class="overlay">
+  <h1>ローグクライミング</h1>
+  <p>矢印キーで上下左右に移動し、上へ100階を目指そう！</p>
+  <button id="startBtn">スタート</button>
+</div>
 <div id="gameOverOverlay" class="overlay hidden">
   <h1>ゲームオーバー</h1>
-  <p id="finalScore">スコア: 0</p>
+  <p>到達階層: <span id="finalFloor">0</span></p>
+  <p>総スコア: <span id="finalScore">0</span></p>
   <button id="retryBtn">リトライ</button>
 </div>
 
@@ -69,122 +49,94 @@ const ctx = canvas.getContext('2d');
 canvas.width = window.innerWidth;
 canvas.height = window.innerHeight;
 
-// オーディオ設定
-const audio = new Audio('https://raw.githubusercontent.com/Emon2358/lolita-megab-rger-block-crasher-game/main/お.m4a');
-audio.loop = true;
-audio.volume = 0.5;
-audio.play();
+audio = new Audio('https://raw.githubusercontent.com/Emon2358/lolita-megab-rger-block-crasher-game/main/%E3%81%8A.m4a');
+audio.loop = true; audio.volume = 0.5; audio.play();
 
-// ベクトル演算
-class Vec { constructor(x,y){this.x=x;this.y=y;} add(v){return new Vec(this.x+v.x,this.y+v.y);} mul(s){return new Vec(this.x*s,this.y*s);} len(){return Math.hypot(this.x,this.y);} norm(){let l=this.len();return new Vec(this.x/l,this.y/l);} }
+const TILE = 40;
+const COLS = Math.floor(canvas.width / TILE);
+const ROWS = Math.floor(canvas.height / TILE);
 
-// オブジェクト基底
-class Obj { constructor(pos){this.pos=pos;} draw(){} update(){} }
+class Player {
+  constructor(x,y) { this.x = x; this.y = y; this.size = TILE*0.8; }
+  draw() { ctx.fillStyle = '#ff0'; ctx.fillRect(this.x*TILE + TILE*0.1, this.y*TILE + TILE*0.1, this.size, this.size); }
+}
+class Enemy {
+  constructor(x,y){ this.x=x; this.y=y; this.size=TILE*0.8; }
+  draw(){ ctx.fillStyle='#f00'; ctx.fillRect(this.x*TILE+TILE*0.1, this.y*TILE+TILE*0.1, this.size, this.size); }
+}
+class Treasure {
+  constructor(x,y,score){ this.x=x; this.y=y; this.score=score; this.size=TILE*0.6; this.collected=false; }
+  draw(){ if(!this.collected){ ctx.fillStyle='#0ff'; ctx.fillRect(this.x*TILE+TILE*0.2, this.y*TILE+TILE*0.2, this.size, this.size); }}
+}
 
-// ボール
-class Ball extends Obj {
-  constructor(pos){super(pos); this.vel = new Vec(0,0); this.radius=10; this.moving=false; }
-  draw(){ ctx.fillStyle='#ff0'; ctx.beginPath(); ctx.arc(this.pos.x,this.pos.y,this.radius,0,Math.PI*2); ctx.fill(); }
-  update(){ if(this.moving){ this.vel = this.vel.mul(0.99); this.pos = this.pos.add(this.vel);
-      stage.walls.forEach(w=>w.checkBounce(this));
-      stage.obstacles.forEach(o=>o.checkBounce(this));
-      enemies.forEach(e=> e.checkHit(this));
-      orbs.forEach(o=> o.checkCollect(this));
-      goal.checkReach(this);
-      if(this.vel.len()<0.1) this.moving=false;
-    }
+let floors = [];
+for(let i=1; i<=100; i++){
+  let items = { enemies: [], treasures: [] };
+  // 敵3体, 宝箱3個をランダム配置
+  for(let e=0;e<3;e++){ items.enemies.push(new Enemy(Math.floor(Math.random()*COLS), Math.floor(Math.random()*ROWS))); }
+  for(let t=0;t<3;t++){ items.treasures.push(new Treasure(Math.floor(Math.random()*COLS), Math.floor(Math.random()*ROWS), 10)); }
+  floors.push(items);
+}
+
+let player, currentFloor, score;
+function initFloor(n){ currentFloor = n;
+  player = new Player(Math.floor(COLS/2), ROWS-1);
+  score = score || 0;
+  document.getElementById('floorNum').innerText = currentFloor;
+  document.getElementById('scoreVal').innerText = score;
+}
+
+function nextFloor(){ if(currentFloor>=100) { gameClear(); return; }
+  score += floors[currentFloor-1].treasures.filter(t=>t.collected).reduce((a,b)=>a+b.score,0);
+  document.getElementById('scoreVal').innerText = score;
+  initFloor(currentFloor+1);
+}
+
+function gameOver(){ document.getElementById('finalFloor').innerText = currentFloor;
+  document.getElementById('finalScore').innerText = score;
+  showOverlay('gameOverOverlay'); }
+function gameClear(){ alert('クリア！'); currentFloor=1; score=0; showOverlay('startOverlay'); }
+
+function draw(){ ctx.clearRect(0,0,canvas.width,canvas.height);
+  // 背景を描画（グリッド）
+  ctx.strokeStyle='#444'; for(let i=0;i<=COLS;i++){ ctx.beginPath(); ctx.moveTo(i*TILE,0); ctx.lineTo(i*TILE,canvas.height); ctx.stroke(); }
+  for(let j=0;j<=ROWS;j++){ ctx.beginPath(); ctx.moveTo(0,j*TILE); ctx.lineTo(canvas.width,j*TILE); ctx.stroke(); }
+  // アイテム描画
+  floors[currentFloor-1].enemies.forEach(e=>e.draw());
+  floors[currentFloor-1].treasures.forEach(t=>t.draw());
+  player.draw();
+}
+
+function update(){ // 衝突判定
+  // 宝箱
+  floors[currentFloor-1].treasures.forEach(t=>{
+    if(!t.collected && t.x===player.x && t.y===player.y){ t.collected=true; score+=t.score; document.getElementById('scoreVal').innerText = score; }
+  });
+  // 敵
+  if(floors[currentFloor-1].enemies.some(e=>e.x===player.x&&e.y===player.y)){ gameOver(); }
+  // 上端到達で次の階
+  if(player.y===0){ nextFloor(); }
+}
+
+window.addEventListener('keydown', e=>{
+  if(isOverlayVisible()) return;
+  switch(e.key){
+    case 'ArrowUp': player.y = Math.max(0, player.y-1); break;
+    case 'ArrowDown': player.y = Math.min(ROWS-1, player.y+1); break;
+    case 'ArrowLeft': player.x = Math.max(0, player.x-1); break;
+    case 'ArrowRight': player.x = Math.min(COLS-1, player.x+1); break;
   }
-}
+  update();
+});
 
-// 壁
-class Wall { constructor(x1,y1,x2,y2){this.a=new Vec(x1,y1);this.b=new Vec(x2,y2);} draw(){ ctx.strokeStyle='#0f0'; ctx.lineWidth=4; ctx.beginPath(); ctx.moveTo(this.a.x,this.a.y); ctx.lineTo(this.b.x,this.b.y); ctx.stroke(); }
-  checkBounce(ball){ /* 衝突判定＋反射ロジック省略 */ }
-}
+function loop(){ draw(); requestAnimationFrame(loop); }
 
-// 敵
-class Enemy extends Obj {
-  constructor(pos){super(pos); this.radius=15; }
-  draw(){ ctx.fillStyle='#f00'; ctx.beginPath(); ctx.arc(this.pos.x,this.pos.y,this.radius,0,2*Math.PI); ctx.fill(); }
-  checkHit(ball){ if(ball.pos.add(this.pos.mul(-1)).len() < this.radius + ball.radius){ gameOver(); }}
-}
-
-// 得点玉
-class Orb extends Obj {
-  constructor(pos, score){super(pos); this.radius=8; this.score=score; this.collected=false; }
-  draw(){ if(!this.collected){ ctx.fillStyle='#0ff'; ctx.beginPath(); ctx.arc(this.pos.x,this.pos.y,this.radius,0,2*Math.PI); ctx.fill(); }}
-  checkCollect(ball){ if(!this.collected && ball.pos.add(this.pos.mul(-1)).len() < this.radius + ball.radius){ this.collected=true; score += this.score; }}
-}
-
-// ゴール
-class Goal extends Obj {
-  constructor(pos){super(pos); this.radius=20; }
-  draw(){ ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(this.pos.x,this.pos.y,this.radius,0,2*Math.PI); ctx.fill(); }
-  checkReach(ball){ if(ball.pos.add(this.pos.mul(-1)).len() < this.radius + ball.radius){ nextStage(); }}
-}
-
-// ステージ管理
-class Stage {
-  constructor(i){ this.walls=[]; this.obstacles=[];
-    let path=[];
-    let startY=canvas.height-100, x=100;
-    path.push(new Vec(x,startY));
-    for(let j=1;j<10;j++){ x += (canvas.width-200)/9; let y = 100 + Math.random()*(canvas.height-200); path.push(new Vec(x,y)); }
-    for(let k=0;k<path.length-1;k++){
-      let a=path[k], b=path[k+1];
-      let dir = new Vec(b.y-a.y, a.x-b.x).norm().mul(50);
-      this.walls.push(new Wall(a.x+dir.x, a.y+dir.y, b.x+dir.x, b.y+dir.y));
-      this.walls.push(new Wall(a.x-dir.x, a.y-dir.y, b.x-dir.x, b.y-dir.y));
-    }
-    for(let m=0;m<5;m++){ let idx=Math.floor(Math.random()*path.length); let p=path[idx]; let len=80; let angle=Math.random()*Math.PI*2; this.obstacles.push(new Wall(p.x,p.y,p.x+Math.cos(angle)*len,p.y+Math.sin(angle)*len)); }
-    this.start = path[0]; this.end = path[path.length-1];
-  }
-}
-
-let stages = Array.from({length:100}, (_,i)=> new Stage(i));
-let cur=0, stage;
-let ball, enemies, orbs, goal, score;
-
-function initStage(){ enemies = []; orbs = []; score = 0; stage = stages[cur]; ball = new Ball(stage.start);
-  for(let e=0;e<3;e++) enemies.push(new Enemy(new Vec(200+Math.random()*(canvas.width-400),200+Math.random()*(canvas.height-400))));
-  for(let o=0;o<5;o++) orbs.push(new Orb(new Vec(200+Math.random()*(canvas.width-400),200+Math.random()*(canvas.height-400)), 10));
-  goal = new Goal(stage.end);
-  document.getElementById('scorePanel').style.top = '-100px';
-}
-
-function nextStage(){ document.getElementById('scorePanel').innerText = 'Score: ' + score;
-  document.getElementById('scorePanel').style.top = '20px';
-  setTimeout(()=>{ cur = (cur+1) % stages.length; initStage(); hideOverlays(); }, 1500);
-}
-
-function gameOver(){ document.getElementById('finalScore').innerText = 'スコア: ' + score; showOverlay('gameOverOverlay'); }
-
-// 描画ループ
-function loop(){ ctx.clearRect(0,0,canvas.width,canvas.height);
-  if (!isOverlayVisible()) {
-    stage.walls.forEach(w=>w.draw()); stage.obstacles.forEach(o=>o.draw());
-    enemies.forEach(e=>e.draw()); orbs.forEach(o=>o.draw()); goal.draw(); ball.draw(); ball.update();
-  }
-  requestAnimationFrame(loop);
-}
-
-// 操作
-let dragStart = null;
-canvas.addEventListener('mousedown', e=>{ if(!ball.moving && !isOverlayVisible()){ dragStart = new Vec(e.clientX, e.clientY); }});
-canvas.addEventListener('mouseup', e=>{ if(dragStart){ let dragEnd = new Vec(e.clientX, e.clientY);
-    ball.vel = dragStart.add(dragEnd.mul(-1)).mul(0.2);
-    ball.moving = true; dragStart = null;
-  }});
-
-// オーバーレイ制御
 function showOverlay(id){ document.getElementById('startOverlay').classList.add('hidden'); document.getElementById('gameOverOverlay').classList.add('hidden'); document.getElementById(id).classList.remove('hidden'); }
 function hideOverlays(){ document.getElementById('startOverlay').classList.add('hidden'); document.getElementById('gameOverOverlay').classList.add('hidden'); }
 function isOverlayVisible(){ return !document.getElementById('startOverlay').classList.contains('hidden') || !document.getElementById('gameOverOverlay').classList.contains('hidden'); }
 
-// ボタン
-document.getElementById('startBtn').addEventListener('click', ()=>{ initStage(); hideOverlays(); });
-document.getElementById('retryBtn').addEventListener('click', ()=>{ cur = 0; initStage(); hideOverlays(); });
-
-// 開始
+document.getElementById('startBtn').addEventListener('click', ()=>{ score=0; initFloor(1); hideOverlays(); });
+document.getElementById('retryBtn').addEventListener('click', ()=>{ initFloor(1); hideOverlays(); });
 showOverlay('startOverlay'); loop();
 </script>
 </body>
