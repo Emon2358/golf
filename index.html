@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ゴルフゲーム</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #222; font-family: sans-serif; }
+    canvas { display: block; background: #333; }
+    .overlay {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.8);
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+    }
+    .overlay.hidden { display: none; }
+    .overlay button {
+      margin-top: 20px;
+      padding: 10px 20px;
+      font-size: 18px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    #scorePanel {
+      position: absolute;
+      top: -100px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 300px;
+      height: 80px;
+      background: rgba(255,255,255,0.9);
+      color: #000;
+      font-size: 24px;
+      text-align: center;
+      line-height: 80px;
+      border-radius: 10px;
+      transition: top 1s ease;
+      z-index: 5;
+    }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<div id="scorePanel"></div>
+
+<!-- スタート画面 -->
+<div id="startOverlay" class="overlay">
+  <h1>ゴルフゲーム</h1>
+  <p>ドラッグ＆フリックでボールを打ち、ゴールを目指そう！</p>
+  <button id="startBtn">スタート</button>
+</div>
+
+<!-- ゲームオーバー画面 -->
+<div id="gameOverOverlay" class="overlay hidden">
+  <h1>ゲームオーバー</h1>
+  <p id="finalScore">スコア: 0</p>
+  <button id="retryBtn">リトライ</button>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+// オーディオ設定
+const audio = new Audio('https://raw.githubusercontent.com/Emon2358/lolita-megab-rger-block-crasher-game/main/お.m4a');
+audio.loop = true;
+audio.volume = 0.5;
+audio.play();
+
+// ベクトル演算
+class Vec { constructor(x,y){this.x=x;this.y=y;} add(v){return new Vec(this.x+v.x,this.y+v.y);} mul(s){return new Vec(this.x*s,this.y*s);} len(){return Math.hypot(this.x,this.y);} norm(){let l=this.len();return new Vec(this.x/l,this.y/l);} }
+
+// オブジェクト基底
+class Obj { constructor(pos){this.pos=pos;} draw(){} update(){} }
+
+// ボール
+class Ball extends Obj {
+  constructor(pos){super(pos); this.vel = new Vec(0,0); this.radius=10; this.moving=false; }
+  draw(){ ctx.fillStyle='#ff0'; ctx.beginPath(); ctx.arc(this.pos.x,this.pos.y,this.radius,0,Math.PI*2); ctx.fill(); }
+  update(){ if(this.moving){ this.vel = this.vel.mul(0.99); this.pos = this.pos.add(this.vel);
+      stage.walls.forEach(w=>w.checkBounce(this));
+      stage.obstacles.forEach(o=>o.checkBounce(this));
+      enemies.forEach(e=> e.checkHit(this));
+      orbs.forEach(o=> o.checkCollect(this));
+      goal.checkReach(this);
+      if(this.vel.len()<0.1) this.moving=false;
+    }
+  }
+}
+
+// 壁
+class Wall { constructor(x1,y1,x2,y2){this.a=new Vec(x1,y1);this.b=new Vec(x2,y2);} draw(){ ctx.strokeStyle='#0f0'; ctx.lineWidth=4; ctx.beginPath(); ctx.moveTo(this.a.x,this.a.y); ctx.lineTo(this.b.x,this.b.y); ctx.stroke(); }
+  checkBounce(ball){ /* 衝突判定＋反射ロジック省略 */ }
+}
+
+// 敵
+class Enemy extends Obj {
+  constructor(pos){super(pos); this.radius=15; }
+  draw(){ ctx.fillStyle='#f00'; ctx.beginPath(); ctx.arc(this.pos.x,this.pos.y,this.radius,0,2*Math.PI); ctx.fill(); }
+  checkHit(ball){ if(ball.pos.add(this.pos.mul(-1)).len() < this.radius + ball.radius){ gameOver(); }}
+}
+
+// 得点玉
+class Orb extends Obj {
+  constructor(pos, score){super(pos); this.radius=8; this.score=score; this.collected=false; }
+  draw(){ if(!this.collected){ ctx.fillStyle='#0ff'; ctx.beginPath(); ctx.arc(this.pos.x,this.pos.y,this.radius,0,2*Math.PI); ctx.fill(); }}
+  checkCollect(ball){ if(!this.collected && ball.pos.add(this.pos.mul(-1)).len() < this.radius + ball.radius){ this.collected=true; score += this.score; }}
+}
+
+// ゴール
+class Goal extends Obj {
+  constructor(pos){super(pos); this.radius=20; }
+  draw(){ ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(this.pos.x,this.pos.y,this.radius,0,2*Math.PI); ctx.fill(); }
+  checkReach(ball){ if(ball.pos.add(this.pos.mul(-1)).len() < this.radius + ball.radius){ nextStage(); }}
+}
+
+// ステージ管理
+class Stage {
+  constructor(i){ this.walls=[]; this.obstacles=[];
+    let path=[];
+    let startY=canvas.height-100, x=100;
+    path.push(new Vec(x,startY));
+    for(let j=1;j<10;j++){ x += (canvas.width-200)/9; let y = 100 + Math.random()*(canvas.height-200); path.push(new Vec(x,y)); }
+    for(let k=0;k<path.length-1;k++){
+      let a=path[k], b=path[k+1];
+      let dir = new Vec(b.y-a.y, a.x-b.x).norm().mul(50);
+      this.walls.push(new Wall(a.x+dir.x, a.y+dir.y, b.x+dir.x, b.y+dir.y));
+      this.walls.push(new Wall(a.x-dir.x, a.y-dir.y, b.x-dir.x, b.y-dir.y));
+    }
+    for(let m=0;m<5;m++){ let idx=Math.floor(Math.random()*path.length); let p=path[idx]; let len=80; let angle=Math.random()*Math.PI*2; this.obstacles.push(new Wall(p.x,p.y,p.x+Math.cos(angle)*len,p.y+Math.sin(angle)*len)); }
+    this.start = path[0]; this.end = path[path.length-1];
+  }
+}
+
+let stages = Array.from({length:100}, (_,i)=> new Stage(i));
+let cur=0, stage;
+let ball, enemies, orbs, goal, score;
+
+function initStage(){ enemies = []; orbs = []; score = 0; stage = stages[cur]; ball = new Ball(stage.start);
+  for(let e=0;e<3;e++) enemies.push(new Enemy(new Vec(200+Math.random()*(canvas.width-400),200+Math.random()*(canvas.height-400))));
+  for(let o=0;o<5;o++) orbs.push(new Orb(new Vec(200+Math.random()*(canvas.width-400),200+Math.random()*(canvas.height-400)), 10));
+  goal = new Goal(stage.end);
+  document.getElementById('scorePanel').style.top = '-100px';
+}
+
+function nextStage(){ document.getElementById('scorePanel').innerText = 'Score: ' + score;
+  document.getElementById('scorePanel').style.top = '20px';
+  setTimeout(()=>{ cur = (cur+1) % stages.length; initStage(); hideOverlays(); }, 1500);
+}
+
+function gameOver(){ document.getElementById('finalScore').innerText = 'スコア: ' + score; showOverlay('gameOverOverlay'); }
+
+// 描画ループ
+function loop(){ ctx.clearRect(0,0,canvas.width,canvas.height);
+  if (!isOverlayVisible()) {
+    stage.walls.forEach(w=>w.draw()); stage.obstacles.forEach(o=>o.draw());
+    enemies.forEach(e=>e.draw()); orbs.forEach(o=>o.draw()); goal.draw(); ball.draw(); ball.update();
+  }
+  requestAnimationFrame(loop);
+}
+
+// 操作
+let dragStart = null;
+canvas.addEventListener('mousedown', e=>{ if(!ball.moving && !isOverlayVisible()){ dragStart = new Vec(e.clientX, e.clientY); }});
+canvas.addEventListener('mouseup', e=>{ if(dragStart){ let dragEnd = new Vec(e.clientX, e.clientY);
+    ball.vel = dragStart.add(dragEnd.mul(-1)).mul(0.2);
+    ball.moving = true; dragStart = null;
+  }});
+
+// オーバーレイ制御
+function showOverlay(id){ document.getElementById('startOverlay').classList.add('hidden'); document.getElementById('gameOverOverlay').classList.add('hidden'); document.getElementById(id).classList.remove('hidden'); }
+function hideOverlays(){ document.getElementById('startOverlay').classList.add('hidden'); document.getElementById('gameOverOverlay').classList.add('hidden'); }
+function isOverlayVisible(){ return !document.getElementById('startOverlay').classList.contains('hidden') || !document.getElementById('gameOverOverlay').classList.contains('hidden'); }
+
+// ボタン
+document.getElementById('startBtn').addEventListener('click', ()=>{ initStage(); hideOverlays(); });
+document.getElementById('retryBtn').addEventListener('click', ()=>{ cur = 0; initStage(); hideOverlays(); });
+
+// 開始
+showOverlay('startOverlay'); loop();
+</script>
+</body>
+</html>
